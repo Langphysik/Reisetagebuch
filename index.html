@@ -261,6 +261,16 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede.`;
       <input type="password" id="api-key-input" placeholder="sk-ant-…" value="${escapeHtml(state.apiKey)}">
       <div class="hint">Der Key wird ausschließlich lokal in deinem Browser gespeichert (localStorage) und nur direkt an die Anthropic-API gesendet. Da der Aufruf clientseitig erfolgt, ist der Key im Quelltext/Netzwerk-Tab dieses Browsers sichtbar — für ein privates, selbst gehostetes Tool ist das ok, teile diese Datei mit eingetragenem Key aber nicht weiter. Ohne Key wird automatisch eine einfache lokale Textvorlage genutzt.</div>
       <button class="btn small" id="save-key-btn">Speichern</button>
+
+      <div style="height:1px;background:var(--line);margin:20px 0;"></div>
+      <label>Sicherung</label>
+      <div class="hint">Deine Daten liegen nur lokal in diesem Browser/dieser Adresse. Über Export/Import kannst du sie sichern oder auf ein anderes Gerät bzw. eine andere Adresse (z. B. von einer lokal geöffneten Datei zur GitHub-Pages-Version) übertragen.</div>
+      <div class="btn-row" style="margin-top:0;">
+        <button class="btn ghost small" id="export-data-btn">⬇ Alle Reisen exportieren</button>
+        <button class="btn ghost small" id="import-data-btn">⬆ Sicherung importieren</button>
+      </div>
+      <input type="file" id="import-file-input" accept="application/json" style="display:none;">
+      <div class="status-line" id="import-status"></div>
     </div>`;
   }
 
@@ -296,6 +306,25 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede.`;
     if(saveKeyBtn) saveKeyBtn.addEventListener('click', ()=>{
       saveApiKey(document.getElementById('api-key-input').value.trim());
       state.showSettings=false; render();
+    });
+    const exportDataBtn = document.getElementById('export-data-btn');
+    if(exportDataBtn) exportDataBtn.addEventListener('click', exportAllData);
+    const importDataBtn = document.getElementById('import-data-btn');
+    if(importDataBtn) importDataBtn.addEventListener('click', ()=> document.getElementById('import-file-input').click());
+    const importFileInput = document.getElementById('import-file-input');
+    if(importFileInput) importFileInput.addEventListener('change', async (e)=>{
+      const file = e.target.files[0];
+      if(!file) return;
+      const statusEl = document.getElementById('import-status');
+      statusEl.textContent = 'Sicherung wird eingelesen …';
+      try{
+        const summary = await importDataFromFile(file);
+        statusEl.textContent = `Import fertig: ${summary.trips} Reise(n), ${summary.entries} Tag(e) übernommen.`;
+        render();
+      }catch(err){
+        console.error(err);
+        statusEl.textContent = 'Import fehlgeschlagen — ist das eine gültige Sicherungsdatei dieser App?';
+      }
     });
 
     app.querySelectorAll('[data-trip]').forEach(el=>{
@@ -637,6 +666,45 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede.`;
       alert('Der PDF-Export ist fehlgeschlagen. Bitte versuch es erneut.');
     }
     statusEl.style.display='none';
+  }
+
+  function exportAllData(){
+    const payload = { trips: state.trips, entries: state.entries, exportedAt: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `reisetagebuch-sicherung-${todayISO()}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function importDataFromFile(file){
+    return new Promise((resolve, reject)=>{
+      const reader = new FileReader();
+      reader.onload = (ev)=>{
+        try{
+          const data = JSON.parse(ev.target.result);
+          if(!data || !Array.isArray(data.trips)) throw new Error('Ungültiges Sicherungsformat');
+          let tripsAdded = 0, entriesAdded = 0;
+          data.trips.forEach(t=>{
+            if(!state.trips.find(x=>x.id===t.id)){ state.trips.push(t); tripsAdded++; }
+          });
+          saveTrips();
+          Object.keys(data.entries || {}).forEach(tripId=>{
+            if(!state.entries[tripId]) state.entries[tripId] = [];
+            (data.entries[tripId]||[]).forEach(en=>{
+              if(!state.entries[tripId].find(x=>x.id===en.id)){ state.entries[tripId].push(en); entriesAdded++; }
+            });
+            state.entries[tripId].sort((a,b)=>a.date.localeCompare(b.date));
+            saveEntries(tripId);
+          });
+          resolve({trips: tripsAdded, entries: entriesAdded});
+        }catch(e){ reject(e); }
+      };
+      reader.onerror = reject;
+      reader.readAsText(file);
+    });
   }
 
   // ---------- map: geocoding + display of visited places ----------
