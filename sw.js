@@ -1,4 +1,4 @@
-const CACHE_NAME = 'reisetagebuch-v1';
+const CACHE_NAME = 'reisetagebuch-v2';
 const APP_SHELL = [
   './index.html',
   './manifest.json',

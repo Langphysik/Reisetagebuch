@@ -61,7 +61,7 @@
   .empty .glyph{font-size:30px;margin-bottom:10px;}
   .panel{background:var(--card); border-radius:6px; box-shadow:var(--shadow);padding:20px; margin-bottom:20px;}
   label{font-family:'IBM Plex Mono',monospace; font-size:11px; text-transform:uppercase; letter-spacing:0.1em; color:var(--ink-soft); display:block; margin-bottom:6px;}
-  input[type=text], input[type=date], input[type=password], textarea{width:100%; font-family:'Work Sans',sans-serif; font-size:15px; color:var(--ink);background:var(--paper); border:1px solid var(--line); border-radius:4px;padding:10px 12px; margin-bottom:16px;}
+  input[type=text], input[type=date], input[type=password], textarea, select{width:100%; font-family:'Work Sans',sans-serif; font-size:15px; color:var(--ink);background:var(--paper); border:1px solid var(--line); border-radius:4px;padding:10px 12px; margin-bottom:16px;}
   textarea{resize:vertical; min-height:56px; font-family:'Source Serif 4', serif; font-size:15.5px;}
   .field-row{display:flex; gap:12px;}
   .field-row > div{flex:1;}
@@ -72,7 +72,12 @@
   .waypoint-dot{position:relative; z-index:1; width:15px;height:15px;border-radius:50%;border:2px solid var(--route); background:var(--paper);display:flex;align-items:center;justify-content:center;font-size:9px;}
   .waypoint.active .waypoint-dot{background:var(--route);}
   .waypoint-label{font-family:'IBM Plex Mono',monospace; font-size:10.5px; color:var(--ink-soft); margin-top:6px; white-space:nowrap;}
+  .waypoint-weather{font-size:13px; margin-top:2px;}
   .add-waypoint .waypoint-dot{border-style:dashed; color:var(--route);}
+  .sticker-picker{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px;}
+  .sticker-chip{font-size:19px; background:var(--paper); border:1.5px solid var(--line); border-radius:6px; width:38px; height:38px; cursor:pointer; display:flex; align-items:center; justify-content:center; padding:0;}
+  .sticker-chip.active{border-color:var(--route); background:var(--stamp-soft);}
+  .entry-stickers{font-size:16px; letter-spacing:2px;}
   .photo-picker-row{display:flex; gap:10px; flex-wrap:wrap; margin-bottom:6px;}
   .photo-thumb{position:relative; width:78px; height:78px; border-radius:4px; overflow:hidden;box-shadow:0 2px 6px rgba(43,38,32,0.25); flex:0 0 auto;}
   .photo-thumb img{width:100%;height:100%;object-fit:cover;display:block;}
@@ -119,6 +124,22 @@
   "use strict";
 
   // ---------- category definitions (fixed) ----------
+  const WEATHER = [
+    {v:'', icon:'—', label:'– keine Angabe –'},
+    {v:'sonnig', icon:'☀️', label:'Sonnig'},
+    {v:'wolkig', icon:'⛅', label:'Wolkig'},
+    {v:'bewoelkt', icon:'☁️', label:'Bewölkt'},
+    {v:'regen', icon:'🌧️', label:'Regen'},
+    {v:'gewitter', icon:'⛈️', label:'Gewitter'},
+    {v:'schnee', icon:'❄️', label:'Schnee'},
+    {v:'wind', icon:'🌬️', label:'Windig'},
+    {v:'nebel', icon:'🌫️', label:'Neblig'}
+  ];
+  function weatherIcon(v){ const w = WEATHER.find(w=>w.v===v); return (w && w.v) ? w.icon : ''; }
+  function weatherLabel(v){ const w = WEATHER.find(w=>w.v===v); return w ? w.label : ''; }
+
+  const STICKERS = ['☀️','⛅','🌧️','⛈️','❄️','🌈','⛰️','🏔️','🌊','🌲','🏖️','🌅','🦭','🐄','🐐','🦌','🐦','🚵','🚴','🥾','🏊','⛵','😄','🥵','🥶','❤️'];
+
   const CATEGORIES = [
     {key:'essen', label:'Essen', placeholder:'Was hast du gegessen? Highlights, Restaurants, Spezialitäten …'},
     {key:'tiere', label:'Erlebnisse mit Tieren', placeholder:'Tieren begegnet? Was ist passiert?'},
@@ -198,6 +219,7 @@
   // ---------- text generation ----------
   function localTemplateText(f){
     const pieces = [];
+    if(f.weather) pieces.push(`Das Wetter: ${weatherLabel(f.weather)}.`);
     if(f.aktivitaet) pieces.push(f.aktivitaet.trim());
     if(f.orte) pieces.push(`Unterwegs habe ich diese Orte gesehen: ${f.orte.trim()}`);
     if(f.essen) pieces.push(`Kulinarisch war heute einiges dabei: ${f.essen.trim()}`);
@@ -213,13 +235,16 @@
       return localTemplateText(f);
     }
     const lines = [];
+    if(f.weather) lines.push(`Wetter: ${weatherLabel(f.weather)}`);
     CATEGORIES.forEach(c=>{ if(f[c.key]) lines.push(`${c.label}: ${f[c.key]}`); });
     if(f.customLabel && f.customText) lines.push(`${f.customLabel}: ${f.customText}`);
-    const prompt = `Du schreibst einen persönlichen Reisetagebuch-Eintrag auf Deutsch, Ich-Perspektive, warm und bildhaft aber nicht kitschig, 70-140 Wörter, ein bis zwei Absätze, ohne Überschrift und ohne das Datum zu wiederholen. Verwende ausschließlich die folgenden Stichpunkte, erfinde keine zusätzlichen Fakten hinzu und lass leere Kategorien einfach weg:
+    const prompt = `Du schreibst einen persönlichen Reisetagebuch-Eintrag auf Deutsch, Ich-Perspektive, warm und bildhaft aber nicht kitschig, ohne Überschrift und ohne das Datum zu wiederholen.
+
+Wichtigste Regel: Jedes einzelne Detail aus jeder der folgenden Kategorien MUSS im Text vorkommen, auch Nebensächliches, Namen, Zahlen und Aufzählungen. Lass nichts weg, kürze nicht zusammen und fasse nicht mehrere genannte Dinge zu einem einzigen vagen Begriff zusammen. Erfinde umgekehrt keine zusätzlichen Fakten hinzu, die nicht genannt wurden. Leere Kategorien (die unten gar nicht auftauchen) einfach ignorieren. Die Textlänge richtet sich danach, wie viel Stoff da ist: lieber etwas länger und vollständig als kurz und lückenhaft.
 
 ${lines.join('\n')}
 
-Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede.`;
+Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, ohne Aufzählungszeichen — als zusammenhängenden Fließtext in ein bis drei Absätzen.`;
 
     try{
       const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -367,7 +392,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede.`;
 
     html += `<div class="thread-wrap"><div class="thread-track">`;
     entries.forEach(en=>{
-      html += `<div class="waypoint" data-goto="${en.id}"><div class="waypoint-dot"></div><div class="waypoint-label">${fmtDateShort(en.date)}</div></div>`;
+      html += `<div class="waypoint" data-goto="${en.id}"><div class="waypoint-dot"></div><div class="waypoint-weather">${weatherIcon(en.weather)}</div><div class="waypoint-label">${fmtDateShort(en.date)}</div></div>`;
     });
     html += `<div class="waypoint add-waypoint" id="add-waypoint"><div class="waypoint-dot">+</div><div class="waypoint-label">Neu</div></div></div></div>`;
 
@@ -458,7 +483,10 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede.`;
 
     return `<div class="entry-card" id="entry-${en.id}">
       <div class="entry-head">
-        <div class="stamp-badge">◆ ${fmtDate(en.date)}</div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <div class="stamp-badge">◆ ${fmtDate(en.date)}${en.weather?` ${weatherIcon(en.weather)}`:''}</div>
+          ${en.stickers && en.stickers.length ? `<div class="entry-stickers">${en.stickers.join(' ')}</div>` : ''}
+        </div>
         <div class="entry-actions">
           <button class="icon-btn" data-edit="${en.id}" title="Bearbeiten">✎</button>
           <button class="icon-btn" data-del-entry="${en.id}" title="Löschen">✕</button>
@@ -476,6 +504,8 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede.`;
     if(entryId){
       const en = entries.find(e=>e.id===entryId);
       state.formDate = en.date;
+      state.formWeather = en.weather || '';
+      state.formStickers = (en.stickers||[]).slice();
       CATEGORIES.forEach(c=> state.formFields[c.key] = en[c.key] || '');
       state.formCustomLabel = en.customLabel || ''; state.formCustomText = en.customText || '';
       state.formPhotos = (en.photos||[]).slice();
@@ -485,6 +515,8 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede.`;
       let nextDate = todayISO();
       if(last){ const d = new Date(last.date+'T00:00:00'); d.setDate(d.getDate()+1); nextDate = d.toISOString().slice(0,10); }
       state.formDate = nextDate;
+      state.formWeather = '';
+      state.formStickers = [];
       CATEGORIES.forEach(c=> state.formFields[c.key] = '');
       state.formCustomLabel=''; state.formCustomText='';
       state.formPhotos = []; state.formGeneratedText='';
@@ -509,12 +541,20 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede.`;
 
     let html = `<div class="topbar"><div><button class="back-btn" id="cancel-btn">‹ Abbrechen</button><h1>${state.editingEntryId?'Tag bearbeiten':'Neuer Tag'}</h1></div></div>
     <div class="panel">
-      <label>Datum</label><input type="date" id="f-date" value="${state.formDate}">
+      <div class="field-row">
+        <div><label>Datum</label><input type="date" id="f-date" value="${state.formDate}"></div>
+        <div><label>Wetter</label><select id="f-weather">${WEATHER.map(w=>`<option value="${w.v}" ${w.v===state.formWeather?'selected':''}>${w.icon} ${w.label}</option>`).join('')}</select></div>
+      </div>
       ${fieldsHtml}
       <label>Eigene Kategorie — Titel</label>
       <input type="text" id="f-custom-label" placeholder="z. B. Höhenmeter, Musik des Tages, Gedanken …" value="${escapeHtml(state.formCustomLabel)}">
       <label>Eigene Kategorie — Inhalt</label>
       <textarea id="f-custom-text" placeholder="Inhalt zur selbst gewählten Kategorie …">${escapeHtml(state.formCustomText)}</textarea>
+
+      <label>Sticker</label>
+      <div class="sticker-picker" id="sticker-picker">
+        ${STICKERS.map(s=>`<button type="button" class="sticker-chip ${state.formStickers.includes(s)?'active':''}" data-sticker="${s}">${s}</button>`).join('')}
+      </div>
 
       <label>Fotos</label>
       <div class="photo-picker-row" id="photo-row">
@@ -539,6 +579,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede.`;
 
     document.getElementById('cancel-btn').addEventListener('click', ()=>{ state.view='trip'; render(); });
     document.getElementById('f-date').addEventListener('change', e=> state.formDate = e.target.value);
+    document.getElementById('f-weather').addEventListener('change', e=> state.formWeather = e.target.value);
     app.querySelectorAll('[data-field]').forEach(el=>{
       el.addEventListener('input', e=> state.formFields[el.getAttribute('data-field')] = e.target.value);
     });
@@ -546,6 +587,15 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede.`;
     document.getElementById('f-custom-text').addEventListener('input', e=> state.formCustomText = e.target.value);
     const genTextArea = document.getElementById('f-generated');
     if(genTextArea) genTextArea.addEventListener('input', e=> state.formGeneratedText = e.target.value);
+
+    app.querySelectorAll('[data-sticker]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const s = el.getAttribute('data-sticker');
+        const idx = state.formStickers.indexOf(s);
+        if(idx>=0) state.formStickers.splice(idx,1); else state.formStickers.push(s);
+        el.classList.toggle('active');
+      });
+    });
 
     document.getElementById('add-photo-btn').addEventListener('click', ()=> document.getElementById('photo-input').click());
     document.getElementById('photo-input').addEventListener('change', async (e)=>{
@@ -574,7 +624,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede.`;
 
     document.getElementById('generate-btn').addEventListener('click', async ()=>{
       state.generating = true; render();
-      const f = Object.assign({}, state.formFields, {customLabel:state.formCustomLabel, customText:state.formCustomText});
+      const f = Object.assign({}, state.formFields, {weather: state.formWeather, customLabel:state.formCustomLabel, customText:state.formCustomText});
       state.formGeneratedText = await generateDiaryText(f);
       state.generating = false; render();
     });
@@ -585,6 +635,8 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede.`;
       const entryObj = Object.assign({
         id: state.editingEntryId || uid(),
         date: state.formDate,
+        weather: state.formWeather,
+        stickers: state.formStickers,
         customLabel: state.formCustomLabel, customText: state.formCustomText,
         text: state.formGeneratedText, photos: state.formPhotos
       }, state.formFields);
@@ -660,6 +712,13 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede.`;
           }
         }
       }
+
+      const geocoded = await getGeocodedPlaces(trip, (done,total)=>{
+        statusEl.innerHTML = `<div class="spinner"></div>Orte für Karte werden gesucht … (${done}/${total})`;
+      });
+      doc.addPage();
+      drawRouteMapOnPage(doc, trip.name, geocoded);
+
       doc.save(`${trip.name.replace(/[^a-z0-9äöüß_\- ]/gi,'')||'reisetagebuch'}.pdf`);
     }catch(e){
       console.error(e);
@@ -709,8 +768,8 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede.`;
 
   // ---------- map: geocoding + display of visited places ----------
   function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
-  function loadGeoCache(){ return storeGet('rtb_geocache') || {}; }
-  function saveGeoCache(c){ storeSet('rtb_geocache', c); }
+  function loadGeoCache(){ return storeGet('rtb_geocache_v2') || {}; }
+  function saveGeoCache(c){ storeSet('rtb_geocache_v2', c); }
 
   function extractPlaces(trip){
     const entries = state.entries[trip.id] || [];
@@ -727,11 +786,16 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede.`;
   async function geocodePlace(name, cache){
     if(cache[name] !== undefined) return cache[name];
     try{
-      const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(name)}`;
+      const url = `https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(name)}`;
       const res = await fetch(url);
       const data = await res.json();
-      if(data && data[0]){
-        cache[name] = {lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon)};
+      if(data && data.length){
+        // Nominatim often ranks natural features (peaks, ridges) above the actual settlement
+        // for short place names — e.g. "Imst" the town vs. "Imstspitze" the mountain.
+        // Prefer real places/administrative areas over natural/other features when available.
+        const preferred = data.find(d => d.class==='place' || d.class==='boundary');
+        const best = preferred || data[0];
+        cache[name] = {lat: parseFloat(best.lat), lon: parseFloat(best.lon)};
       } else {
         cache[name] = null;
       }
@@ -740,6 +804,25 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede.`;
       cache[name] = null;
     }
     return cache[name];
+  }
+
+  // Resolves every place mentioned across a trip's entries to coordinates, using and updating
+  // the shared cache. Used both by the on-screen map and by the PDF route-map export.
+  async function getGeocodedPlaces(trip, onProgress){
+    const places = extractPlaces(trip);
+    if(places.length===0) return [];
+    const cache = loadGeoCache();
+    const result = [];
+    for(let i=0;i<places.length;i++){
+      const p = places[i];
+      const wasCached = cache[p.place] !== undefined;
+      const coords = await geocodePlace(p.place, cache);
+      if(onProgress) onProgress(i+1, places.length);
+      if(coords) result.push(Object.assign({}, p, coords));
+      if(!wasCached) await sleep(1100); // Nominatim: max ~1 Anfrage/Sekunde
+    }
+    saveGeoCache(cache);
+    return result;
   }
 
   let currentLeafletMap = null;
@@ -751,7 +834,10 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede.`;
     overlay.innerHTML = `
       <div class="map-overlay-head">
         <h3 style="font-size:17px;">${escapeHtml(trip.name)} — Karte</h3>
-        <button class="icon-btn" id="close-map-btn">✕</button>
+        <div style="display:flex;gap:6px;">
+          <button class="btn ghost small" id="export-map-btn">PDF exportieren</button>
+          <button class="icon-btn" id="close-map-btn">✕</button>
+        </div>
       </div>
       <div id="trip-map"></div>
       <div class="loading-row" id="map-status" style="justify-content:center;padding:10px;"><div class="spinner"></div>Orte werden auf der Karte gesucht …</div>
@@ -761,6 +847,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede.`;
       if(currentLeafletMap){ currentLeafletMap.remove(); currentLeafletMap = null; }
       overlay.remove();
     });
+    document.getElementById('export-map-btn').addEventListener('click', (e)=> exportMapPdf(trip, e.target));
 
     const map = L.map('trip-map').setView([47.4, 10.9], 7);
     currentLeafletMap = map;
@@ -774,34 +861,105 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede.`;
       return;
     }
 
-    const cache = loadGeoCache();
-    const markers = [];
     const statusEl = document.getElementById('map-status');
-    let found = 0, checked = 0;
-    for(const p of places){
-      statusEl.querySelector ? null : null;
-      statusEl.innerHTML = `<div class="spinner"></div>Orte werden gesucht … (${checked+1}/${places.length})`;
-      const wasCached = cache[p.place] !== undefined;
-      const coords = await geocodePlace(p.place, cache);
-      checked++;
-      if(coords){
-        found++;
-        const marker = L.marker([coords.lat, coords.lon]).addTo(map);
-        marker.bindPopup(`<b>${fmtDateShort(p.date)}</b><br>${escapeHtml(p.place)}`);
-        markers.push(marker);
-      }
-      if(!wasCached) await sleep(1100); // Nominatim: max ~1 Anfrage/Sekunde
-    }
-    saveGeoCache(cache);
+    const geocoded = await getGeocodedPlaces(trip, (done,total)=>{
+      statusEl.innerHTML = `<div class="spinner"></div>Orte werden gesucht … (${done}/${total})`;
+    });
+    const markers = geocoded.map(p=>{
+      const marker = L.marker([p.lat, p.lon]).addTo(map);
+      marker.bindPopup(`<b>${fmtDateShort(p.date)}</b><br>${escapeHtml(p.place)}`);
+      return marker;
+    });
 
     if(markers.length>0){
       const group = L.featureGroup(markers);
       map.fitBounds(group.getBounds().pad(0.2));
     }
-    statusEl.innerHTML = found>0
-      ? `${found} von ${places.length} Ort(en) gefunden.`
+    statusEl.innerHTML = geocoded.length>0
+      ? `${geocoded.length} von ${places.length} Ort(en) gefunden.`
       : `Keine der eingetragenen Orte konnten gefunden werden. Prüf die Schreibweise (z. B. "Oberstdorf" statt Abkürzungen).`;
     setTimeout(()=>{ if(statusEl) statusEl.style.opacity='0.6'; }, 3000);
+  }
+
+  // draws a schematic route map (points + connecting line, chronological order) onto the CURRENT page of doc
+  function drawRouteMapOnPage(doc, tripName, places){
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+    const margin = 16;
+    doc.setFont('times','bold'); doc.setFontSize(16);
+    doc.text('Reiseroute', margin, margin + 2);
+    doc.setFont('times','normal'); doc.setFontSize(9);
+    doc.setTextColor(120,120,120);
+    doc.text(tripName, margin, margin + 8);
+    doc.setTextColor(0,0,0);
+
+    const areaX = margin, areaY = margin + 14, areaW = pageW - margin*2, areaH = pageH - margin*2 - 18;
+    doc.setDrawColor(200);
+    doc.rect(areaX, areaY, areaW, areaH);
+
+    if(!places || places.length===0){
+      doc.setFontSize(10);
+      doc.text('Keine Orte gefunden. Trag pro Zeile einen Ort bei "Besuchte Orte" ein.', areaX+6, areaY+12);
+      return;
+    }
+
+    let minLat = Math.min(...places.map(p=>p.lat)), maxLat = Math.max(...places.map(p=>p.lat));
+    let minLon = Math.min(...places.map(p=>p.lon)), maxLon = Math.max(...places.map(p=>p.lon));
+    const latSpan = Math.max(maxLat-minLat, 0.02), lonSpan = Math.max(maxLon-minLon, 0.02);
+    const pad = 0.15;
+    minLat -= latSpan*pad; maxLat += latSpan*pad;
+    minLon -= lonSpan*pad; maxLon += lonSpan*pad;
+
+    function project(lat, lon){
+      const x = areaX + ((lon-minLon)/(maxLon-minLon)) * areaW;
+      const y = areaY + ((maxLat-lat)/(maxLat-minLat)) * areaH; // flip: latitude increases upward, PDF y increases downward
+      return [x,y];
+    }
+
+    // connecting line in chronological order
+    doc.setDrawColor(147,164,178);
+    try{ doc.setLineDashPattern([1.2,1], 0); }catch(e){}
+    for(let i=0;i<places.length-1;i++){
+      const [x1,y1] = project(places[i].lat, places[i].lon);
+      const [x2,y2] = project(places[i+1].lat, places[i+1].lon);
+      doc.line(x1,y1,x2,y2);
+    }
+    try{ doc.setLineDashPattern([], 0); }catch(e){}
+
+    // markers + numbered labels
+    doc.setFontSize(8);
+    places.forEach((p,i)=>{
+      const [x,y] = project(p.lat, p.lon);
+      doc.setFillColor(51,71,91);
+      doc.circle(x, y, 1.6, 'F');
+      doc.setTextColor(43,38,32);
+      doc.text(`${i+1}. ${p.place}`, x+2.6, y+1);
+    });
+    doc.setTextColor(0,0,0);
+
+    // legend
+    doc.setFontSize(8);
+    doc.setTextColor(120,120,120);
+    doc.text('Kartendarstellung: schematisch (kein exakter Maßstab). Quelle Ortssuche: OpenStreetMap/Nominatim.', areaX, areaY+areaH+6);
+    doc.setTextColor(0,0,0);
+  }
+
+  async function exportMapPdf(trip, triggerEl){
+    const originalLabel = triggerEl ? triggerEl.textContent : '';
+    if(triggerEl){ triggerEl.disabled = true; triggerEl.textContent = 'Orte werden gesucht …'; }
+    try{
+      const geocoded = await getGeocodedPlaces(trip, (done,total)=>{
+        if(triggerEl) triggerEl.textContent = `Orte werden gesucht … (${done}/${total})`;
+      });
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({unit:'mm', format:'a4'});
+      drawRouteMapOnPage(doc, trip.name, geocoded);
+      doc.save(`${trip.name.replace(/[^a-z0-9äöüß_\- ]/gi,'')||'reisetagebuch'}-karte.pdf`);
+    }catch(e){
+      console.error(e);
+      alert('Der Karten-Export ist fehlgeschlagen. Bitte versuch es erneut.');
+    }
+    if(triggerEl){ triggerEl.disabled = false; triggerEl.textContent = originalLabel; }
   }
 
   // ---------- init ----------
