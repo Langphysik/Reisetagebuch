@@ -144,7 +144,7 @@
     {key:'essen', label:'Essen', placeholder:'Was hast du gegessen? Highlights, Restaurants, Spezialitäten …'},
     {key:'tiere', label:'Erlebnisse mit Tieren', placeholder:'Tieren begegnet? Was ist passiert?'},
     {key:'menschen', label:'Begegnungen mit Menschen', placeholder:'Interessante Begegnungen, Gespräche …'},
-    {key:'orte', label:'Besuchte Orte', placeholder:'Ein Ort pro Zeile (erscheint dann auf der Karte), z. B.:\nOberstdorf\nMemminger Hütte'},
+    {key:'orte', label:'Besuchte Orte', placeholder:'Ein Ort pro Zeile (erscheint dann auf der Karte). Bei mehrdeutigen Namen die Region dahinter ergänzen, z. B.:\nImst, Tirol\nMemminger Hütte, Österreich'},
     {key:'aktivitaet', label:'Aktivität', placeholder:'Was hast du unternommen? Strecke, Sport, Programm …'},
     {key:'weiteres', label:'Weiteres', placeholder:'Alles, was sonst noch dazugehört …'}
   ];
@@ -768,15 +768,15 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
 
   // ---------- map: geocoding + display of visited places ----------
   function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
-  function loadGeoCache(){ return storeGet('rtb_geocache_v2') || {}; }
-  function saveGeoCache(c){ storeSet('rtb_geocache_v2', c); }
+  function loadGeoCache(){ return storeGet('rtb_geocache_v3') || {}; }
+  function saveGeoCache(c){ storeSet('rtb_geocache_v3', c); }
 
   function extractPlaces(trip){
     const entries = state.entries[trip.id] || [];
     const out = [];
     entries.forEach(en=>{
       const raw = en.orte || '';
-      raw.split(/\n|,/).map(s=>s.trim()).filter(Boolean).forEach(place=>{
+      raw.split(/\n/).map(s=>s.trim()).filter(Boolean).forEach(place=>{
         out.push({place, date: en.date, entryId: en.id});
       });
     });
@@ -786,16 +786,12 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
   async function geocodePlace(name, cache){
     if(cache[name] !== undefined) return cache[name];
     try{
-      const url = `https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(name)}`;
+      const url = `https://nominatim.openstreetmap.org/search?format=json&limit=8&namedetails=1&addressdetails=1&accept-language=de&q=${encodeURIComponent(name)}`;
       const res = await fetch(url);
       const data = await res.json();
       if(data && data.length){
-        // Nominatim often ranks natural features (peaks, ridges) above the actual settlement
-        // for short place names — e.g. "Imst" the town vs. "Imstspitze" the mountain.
-        // Prefer real places/administrative areas over natural/other features when available.
-        const preferred = data.find(d => d.class==='place' || d.class==='boundary');
-        const best = preferred || data[0];
-        cache[name] = {lat: parseFloat(best.lat), lon: parseFloat(best.lon)};
+        const best = pickBestGeocode(name, data);
+        cache[name] = best ? {lat: parseFloat(best.lat), lon: parseFloat(best.lon), label: best.display_name || ''} : null;
       } else {
         cache[name] = null;
       }
@@ -804,6 +800,45 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
       cache[name] = null;
     }
     return cache[name];
+  }
+
+  // Nominatim frequently ranks natural features (peaks, ridges, streams) above the actual
+  // settlement for short names — e.g. "Imst" the town vs. "Imstspitze" the mountain. This
+  // scores all candidates so towns, villages, administrative areas and alpine huts win over
+  // terrain features, and an exact name match is strongly preferred.
+  function pickBestGeocode(query, candidates){
+    const q = query.trim().toLowerCase();
+    const settlement = new Set(['city','town','village','hamlet','municipality','isolated_dwelling','suburb','quarter','neighbourhood','locality','croft']);
+    function namesOf(d){
+      const nd = d.namedetails || {};
+      return [d.name, nd.name, nd['name:de'], nd['name:en'], nd.official_name, nd.alt_name]
+        .filter(Boolean).map(s=>String(s).toLowerCase());
+    }
+    function score(d){
+      let s = 0;
+      const cls = d.class, type = d.type;
+      if(cls === 'place' && settlement.has(type)) s += 100;
+      else if(cls === 'place') s += 35;                       // region, island, farm …
+      else if(cls === 'boundary' && type === 'administrative') s += 55;
+      if(cls === 'tourism' && (type === 'alpine_hut' || type === 'wilderness_hut' || type === 'chalet')) s += 85;
+      if(cls === 'amenity' && type === 'shelter') s += 25;
+      if(cls === 'natural' || cls === 'mountain_range') s -= 60; // peak, ridge, saddle, glacier …
+      if(cls === 'waterway') s -= 45;
+      const names = namesOf(d);
+      if(names.includes(q)) s += 55;
+      else if(names.some(n => n.startsWith(q + ' ') || n.startsWith(q + ','))) s += 20;
+      else if(names.some(n => n.startsWith(q))) s += 8;
+      s += (parseFloat(d.importance) || 0) * 12;
+      const pr = parseFloat(d.place_rank);
+      if(!isNaN(pr)) s += Math.max(0, 30 - pr) * 0.4;         // lower rank = more prominent unit
+      return s;
+    }
+    let best = candidates[0], bestScore = -Infinity;
+    for(const d of candidates){
+      const sc = score(d);
+      if(sc > bestScore){ bestScore = sc; best = d; }
+    }
+    return best;
   }
 
   // Resolves every place mentioned across a trip's entries to coordinates, using and updating
@@ -851,10 +886,16 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
 
     const map = L.map('trip-map').setView([47.4, 10.9], 7);
     currentLeafletMap = map;
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    const topoLayer = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap-Mitwirkende, SRTM | © OpenTopoMap (CC-BY-SA)',
+      maxZoom: 17
+    });
+    const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap-Mitwirkende',
-      maxZoom: 18
-    }).addTo(map);
+      maxZoom: 19
+    });
+    topoLayer.addTo(map);
+    L.control.layers({'Gelände (OpenTopoMap)': topoLayer, 'Standard (OpenStreetMap)': osmLayer}, null, {collapsed:false}).addTo(map);
 
     if(places.length===0){
       document.getElementById('map-status').innerHTML = 'Keine Orte in "Besuchte Orte" eingetragen. Trag pro Zeile einen Ort ein, dann erscheint er hier.';
@@ -867,7 +908,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
     });
     const markers = geocoded.map(p=>{
       const marker = L.marker([p.lat, p.lon]).addTo(map);
-      marker.bindPopup(`<b>${fmtDateShort(p.date)}</b><br>${escapeHtml(p.place)}`);
+      marker.bindPopup(`<b>${fmtDateShort(p.date)}</b><br>${escapeHtml(p.place)}${p.label?`<br><span style="color:#6b6354;font-size:11px;">${escapeHtml(p.label)}</span>`:''}`);
       return marker;
     });
 
@@ -875,9 +916,11 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
       const group = L.featureGroup(markers);
       map.fitBounds(group.getBounds().pad(0.2));
     }
+    const foundNames = new Set(geocoded.map(g=>g.place));
+    const missing = [...new Set(places.map(p=>p.place).filter(n=>!foundNames.has(n)))];
     statusEl.innerHTML = geocoded.length>0
-      ? `${geocoded.length} von ${places.length} Ort(en) gefunden.`
-      : `Keine der eingetragenen Orte konnten gefunden werden. Prüf die Schreibweise (z. B. "Oberstdorf" statt Abkürzungen).`;
+      ? `${geocoded.length} von ${places.length} Ort(en) gefunden.` + (missing.length?` Nicht gefunden: ${escapeHtml(missing.join(', '))} — Region ergänzen, z. B. „${escapeHtml(missing[0])}, Tirol“.`:'')
+      : `Keine der eingetragenen Orte konnten gefunden werden. Prüf die Schreibweise oder ergänze die Region (z. B. „Imst, Tirol“).`;
     setTimeout(()=>{ if(statusEl) statusEl.style.opacity='0.6'; }, 3000);
   }
 
