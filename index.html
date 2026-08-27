@@ -768,8 +768,14 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
 
   // ---------- map: geocoding + display of visited places ----------
   function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
-  function loadGeoCache(){ return storeGet('rtb_geocache_v3') || {}; }
-  function saveGeoCache(c){ storeSet('rtb_geocache_v3', c); }
+  function loadGeoCache(){ return storeGet('rtb_geocache_v4') || {}; }
+  function saveGeoCache(c){ storeSet('rtb_geocache_v4', c); }
+  function haversineKm(aLat,aLon,bLat,bLon){
+    const R=6371, toRad=x=>x*Math.PI/180;
+    const dLat=toRad(bLat-aLat), dLon=toRad(bLon-aLon);
+    const s=Math.sin(dLat/2)**2 + Math.cos(toRad(aLat))*Math.cos(toRad(bLat))*Math.sin(dLon/2)**2;
+    return 2*R*Math.asin(Math.sqrt(s));
+  }
 
   function extractPlaces(trip){
     const entries = state.entries[trip.id] || [];
@@ -783,32 +789,38 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
     return out;
   }
 
-  async function geocodePlace(name, cache){
+  async function geocodePlace(name, cache, hint){
     if(cache[name] !== undefined) return cache[name];
     try{
-      const url = `https://nominatim.openstreetmap.org/search?format=json&limit=8&namedetails=1&addressdetails=1&accept-language=de&q=${encodeURIComponent(name)}`;
+      const url = `https://nominatim.openstreetmap.org/search?format=json&limit=10&namedetails=1&addressdetails=1&accept-language=de&q=${encodeURIComponent(name)}`;
       const res = await fetch(url);
+      if(!res.ok) throw new Error('HTTP '+res.status);
       const data = await res.json();
       if(data && data.length){
-        const best = pickBestGeocode(name, data);
-        cache[name] = best ? {lat: parseFloat(best.lat), lon: parseFloat(best.lon), label: best.display_name || ''} : null;
-      } else {
-        cache[name] = null;
+        const best = pickBestGeocode(name, data, hint);
+        if(best){
+          const coords = {lat: parseFloat(best.lat), lon: parseFloat(best.lon), label: best.display_name || ''};
+          cache[name] = coords;               // only successful hits are cached
+          return coords;
+        }
       }
+      return null;                            // empty / unusable result — do NOT cache, retry next time
     }catch(e){
       console.error('Geocoding fehlgeschlagen für', name, e);
-      cache[name] = null;
+      return null;                            // transient error (rate limit, network) — do NOT cache
     }
-    return cache[name];
   }
 
-  // Nominatim frequently ranks natural features (peaks, ridges, streams) above the actual
-  // settlement for short names — e.g. "Imst" the town vs. "Imstspitze" the mountain. This
-  // scores all candidates so towns, villages, administrative areas and alpine huts win over
-  // terrain features, and an exact name match is strongly preferred.
-  function pickBestGeocode(query, candidates){
+  // Nominatim frequently ranks natural features (peaks, ridges, streams) or far-away
+  // same-named hamlets above the intended place — e.g. "Imst" the town vs. "Imstspitze"
+  // the mountain. This scores all candidates so towns, villages, administrative areas and
+  // alpine huts win over terrain features, an exact name match is strongly preferred, and
+  // (when a hint centre from the rest of the trip is known) nearby candidates win ties.
+  function pickBestGeocode(query, candidates, hint){
     const q = query.trim().toLowerCase();
-    const settlement = new Set(['city','town','village','hamlet','municipality','isolated_dwelling','suburb','quarter','neighbourhood','locality','croft']);
+    const core = new Set(['city','town','village','hamlet','municipality','borough']);
+    const minor = new Set(['isolated_dwelling','croft','farm']);
+    const urbanPart = new Set(['suburb','quarter','neighbourhood','city_block']);
     function namesOf(d){
       const nd = d.namedetails || {};
       return [d.name, nd.name, nd['name:de'], nd['name:en'], nd.official_name, nd.alt_name]
@@ -817,12 +829,15 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
     function score(d){
       let s = 0;
       const cls = d.class, type = d.type;
-      if(cls === 'place' && settlement.has(type)) s += 100;
-      else if(cls === 'place') s += 35;                       // region, island, farm …
+      if(cls === 'place' && core.has(type)) s += 100;
+      else if(cls === 'place' && urbanPart.has(type)) s += 70;
+      else if(cls === 'place' && minor.has(type)) s += 45;
+      else if(cls === 'place' && type === 'locality') s -= 25;   // OSM locality = named but UNpopulated spot ("mitten in der Landschaft")
+      else if(cls === 'place') s += 30;                          // region, island …
       else if(cls === 'boundary' && type === 'administrative') s += 55;
       if(cls === 'tourism' && (type === 'alpine_hut' || type === 'wilderness_hut' || type === 'chalet')) s += 85;
       if(cls === 'amenity' && type === 'shelter') s += 25;
-      if(cls === 'natural' || cls === 'mountain_range') s -= 60; // peak, ridge, saddle, glacier …
+      if(cls === 'natural' || cls === 'mountain_range') s -= 60;  // peak, ridge, saddle, glacier …
       if(cls === 'waterway') s -= 45;
       const names = namesOf(d);
       if(names.includes(q)) s += 55;
@@ -830,7 +845,11 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
       else if(names.some(n => n.startsWith(q))) s += 8;
       s += (parseFloat(d.importance) || 0) * 12;
       const pr = parseFloat(d.place_rank);
-      if(!isNaN(pr)) s += Math.max(0, 30 - pr) * 0.4;         // lower rank = more prominent unit
+      if(!isNaN(pr)) s += Math.max(0, 30 - pr) * 0.4;            // lower rank = more prominent unit
+      if(hint){
+        const dkm = haversineKm(hint.lat, hint.lon, parseFloat(d.lat), parseFloat(d.lon));
+        s += Math.max(0, 45 - dkm/8);                           // +45 next door … 0 beyond ~360 km
+      }
       return s;
     }
     let best = candidates[0], bestScore = -Infinity;
@@ -851,7 +870,13 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
     for(let i=0;i<places.length;i++){
       const p = places[i];
       const wasCached = cache[p.place] !== undefined;
-      const coords = await geocodePlace(p.place, cache);
+      // rough centre of the places already resolved for this trip — used to break ties
+      // toward the region actually being travelled, not a same-named spot elsewhere
+      const hint = result.length ? {
+        lat: result.reduce((a,r)=>a+r.lat,0)/result.length,
+        lon: result.reduce((a,r)=>a+r.lon,0)/result.length
+      } : null;
+      const coords = await geocodePlace(p.place, cache, hint);
       if(onProgress) onProgress(i+1, places.length);
       if(coords) result.push(Object.assign({}, p, coords));
       if(!wasCached) await sleep(1100); // Nominatim: max ~1 Anfrage/Sekunde
