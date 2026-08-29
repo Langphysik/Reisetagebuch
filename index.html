@@ -56,7 +56,12 @@
   .trip-card .meta{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--ink-soft);margin-top:4px;}
   .mini-thread{display:flex;gap:5px;margin-top:12px;align-items:center;}
   .mini-dot{width:6px;height:6px;border-radius:50%;background:var(--route-soft);}
-  .trip-card .del{position:absolute; top:14px; right:14px; background:none;border:none;color:var(--ink-soft); opacity:0.55; cursor:pointer; font-size:13px;}
+  .trip-card .card-actions{position:absolute; top:14px; right:14px; display:flex; align-items:center; gap:10px;}
+  .trip-card .del{background:none;border:none;color:var(--ink-soft); opacity:0.55; cursor:pointer; font-size:13px;}
+  .trip-card .color-btn{background:none;border:none;color:var(--ink-soft); opacity:0.55; cursor:pointer; font-size:14px; padding:0;}
+  .color-picker-row{display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;}
+  .color-dot{width:22px;height:22px;border-radius:50%;border:1.5px solid var(--line);cursor:pointer;padding:0;}
+  .color-dot.active{border-color:var(--route); border-width:2.5px;}
   .empty{text-align:center; padding:50px 20px; color:var(--ink-soft);}
   .empty .glyph{font-size:30px;margin-bottom:10px;}
   .panel{background:var(--card); border-radius:6px; box-shadow:var(--shadow);padding:20px; margin-bottom:20px;}
@@ -140,6 +145,8 @@
 
   const STICKERS = ['☀️','⛅','🌧️','⛈️','❄️','🌈','⛰️','🏔️','🌊','🏜️','🌲','🏖️','🌅','🦭','🐬','🐋','🐄','🐐','🦌','🐦','🕊️','🐕','🚵','🚴','🥾','🏃','🏊','🏋️','⛵','🚄','⛪','🧖','♨️','🍕','🥗','🐟','😄','🥵','🥶','❤️','💑'];
 
+  const TRIP_COLORS = ['#F7F2E7','#F6DCC8','#F9E4A8','#DCE8C4','#C9E3DD','#CFE0F0','#DAD3EC','#F0D3DE'];
+
   const CATEGORIES = [
     {key:'essen', label:'Essen', placeholder:'Was hast du gegessen? Highlights, Restaurants, Spezialitäten …'},
     {key:'tiere', label:'Erlebnisse mit Tieren', placeholder:'Tieren begegnet? Was ist passiert?'},
@@ -180,7 +187,8 @@
     formGeneratedText:'',
     generating:false,
     showSettings:false,
-    apiKey: ''
+    apiKey: '',
+    colorPickerTripId: null
   };
 
   function loadTrips(){ state.trips = storeGet('trips') || []; }
@@ -238,7 +246,7 @@
     if(f.weather) lines.push(`Wetter: ${weatherLabel(f.weather)}`);
     CATEGORIES.forEach(c=>{ if(f[c.key]) lines.push(`${c.label}: ${f[c.key]}`); });
     if(f.customLabel && f.customText) lines.push(`${f.customLabel}: ${f.customText}`);
-    const prompt = `Du schreibst einen persönlichen Reisetagebuch-Eintrag auf Deutsch, Ich-Perspektive, warm und bildhaft aber nicht kitschig, ohne Überschrift und ohne das Datum zu wiederholen.
+    const prompt = `Du schreibst einen persönlichen Reisetagebuch-Eintrag auf Deutsch, Ich-Perspektive, klar und eher sachlich erzählend, mit wenig Ausschmückung — keine überladenen Bilder, kein Pathos, keine schwülstige Sprache. Ein bisschen persönlicher Ton ist gut, aber die Fakten stehen im Vordergrund. Ohne Überschrift und ohne das Datum zu wiederholen.
 
 Wichtigste Regel: Jedes einzelne Detail aus jeder der folgenden Kategorien MUSS im Text vorkommen, auch Nebensächliches, Namen, Zahlen und Aufzählungen. Lass nichts weg, kürze nicht zusammen und fasse nicht mehrere genannte Dinge zu einem einzigen vagen Begriff zusammen. Erfinde umgekehrt keine zusätzlichen Fakten hinzu, die nicht genannt wurden. Leere Kategorien (die unten gar nicht auftauchen) einfach ignorieren. Die Textlänge richtet sich danach, wie viel Stoff da ist: lieber etwas länger und vollständig als kurz und lückenhaft.
 
@@ -307,15 +315,29 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
     if(state.trips.length===0){
       html += `<div class="empty"><div class="glyph">🧭</div>Noch keine Reise angelegt.<br>Leg los, sobald deine nächste Tour beginnt.</div>`;
     } else {
+      html += `<div class="btn-row" style="margin-top:0;margin-bottom:14px;">
+        <button class="btn ghost small" id="backup-all-btn">📥 Sicherungsdatei erstellen</button>
+      </div>`;
       state.trips.slice().sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).forEach(trip=>{
         const entries = state.entries[trip.id] || [];
         let dotsHtml = '';
         for(let i=0;i<Math.min(Math.max(entries.length,1),10);i++) dotsHtml += `<span class="mini-dot"></span>`;
-        html += `<div class="trip-card" data-trip="${trip.id}">
-          <button class="del" data-del-trip="${trip.id}">✕ löschen</button>
+        const cardColor = trip.color || TRIP_COLORS[0];
+        let pickerHtml = '';
+        if(state.colorPickerTripId===trip.id){
+          pickerHtml = `<div class="color-picker-row">${TRIP_COLORS.map(c=>
+            `<button type="button" class="color-dot ${cardColor===c?'active':''}" style="background:${c};" data-pick-color="${trip.id}:${c}"></button>`
+          ).join('')}</div>`;
+        }
+        html += `<div class="trip-card" data-trip="${trip.id}" style="background:${cardColor};">
+          <div class="card-actions">
+            <button class="color-btn" data-color-toggle="${trip.id}" title="Farbe wählen">🎨</button>
+            <button class="del" data-del-trip="${trip.id}">✕ löschen</button>
+          </div>
           <h3>${escapeHtml(trip.name)}</h3>
           <div class="meta">${entries.length} ${entries.length===1?'Tag':'Tage'} erfasst</div>
           <div class="mini-thread">${dotsHtml}</div>
+          ${pickerHtml}
         </div>`;
       });
     }
@@ -334,6 +356,8 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
     });
     const exportDataBtn = document.getElementById('export-data-btn');
     if(exportDataBtn) exportDataBtn.addEventListener('click', exportAllData);
+    const backupAllBtn = document.getElementById('backup-all-btn');
+    if(backupAllBtn) backupAllBtn.addEventListener('click', exportAllData);
     const importDataBtn = document.getElementById('import-data-btn');
     if(importDataBtn) importDataBtn.addEventListener('click', ()=> document.getElementById('import-file-input').click());
     const importFileInput = document.getElementById('import-file-input');
@@ -354,11 +378,30 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
 
     app.querySelectorAll('[data-trip]').forEach(el=>{
       el.addEventListener('click', (e)=>{
-        if(e.target.closest('[data-del-trip]')) return;
+        if(e.target.closest('[data-del-trip]') || e.target.closest('[data-color-toggle]') || e.target.closest('[data-pick-color]')) return;
         const id = el.getAttribute('data-trip');
         state.currentTripId = id;
         if(!state.entries[id]) loadEntries(id);
         state.view='trip'; render();
+      });
+    });
+    app.querySelectorAll('[data-color-toggle]').forEach(el=>{
+      el.addEventListener('click', (e)=>{
+        e.stopPropagation();
+        const id = el.getAttribute('data-color-toggle');
+        state.colorPickerTripId = state.colorPickerTripId===id ? null : id;
+        render();
+      });
+    });
+    app.querySelectorAll('[data-pick-color]').forEach(el=>{
+      el.addEventListener('click', (e)=>{
+        e.stopPropagation();
+        const [id, color] = el.getAttribute('data-pick-color').split(':');
+        const trip = state.trips.find(t=>t.id===id);
+        trip.color = color;
+        saveTrips();
+        state.colorPickerTripId = null;
+        render();
       });
     });
     app.querySelectorAll('[data-del-trip]').forEach(el=>{
@@ -887,6 +930,67 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
 
   let currentLeafletMap = null;
 
+  // long press (touch) / right-click (desktop) on the map: reverse-geocode the spot and
+  // let the user add it directly as a place, attached to one of the trip's diary entries.
+  function attachLongPressAddPlace(map, trip){
+    map.on('contextmenu', async function(e){
+      if(e.originalEvent) e.originalEvent.preventDefault();
+      const entries = state.entries[trip.id] || [];
+      if(entries.length===0){
+        alert('Leg zuerst einen Reisetag an, bevor du Orte auf der Karte markierst.');
+        return;
+      }
+      const lat = e.latlng.lat, lon = e.latlng.lng;
+      const popup = L.popup({maxWidth:260}).setLatLng(e.latlng)
+        .setContent('<div class="loading-row"><div class="spinner"></div>Ort wird ermittelt …</div>')
+        .openOn(map);
+
+      let suggested = '';
+      try{
+        const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&accept-language=de&zoom=14`;
+        const res = await fetch(url);
+        const data = await res.json();
+        const addr = data.address || {};
+        suggested = addr.village || addr.town || addr.city || addr.municipality || addr.hamlet || addr.suburb
+          || (data.display_name ? data.display_name.split(',')[0] : '') || '';
+      }catch(err){ console.error('Reverse-Geocoding fehlgeschlagen', err); }
+
+      const uidStr = uid();
+      const optionsHtml = entries.map(en=>`<option value="${en.id}">${fmtDate(en.date)}</option>`).join('');
+      popup.setContent(`<div style="min-width:190px;">
+        <label style="margin-bottom:4px;">Ort</label>
+        <input type="text" id="lp-name-${uidStr}" value="${escapeHtml(suggested)}" style="margin-bottom:8px;">
+        <label style="margin-bottom:4px;">Tag</label>
+        <select id="lp-day-${uidStr}" style="margin-bottom:8px;">${optionsHtml}</select>
+        <button class="btn small" id="lp-add-${uidStr}" style="width:100%;">Ort hinzufügen</button>
+      </div>`);
+
+      const daySel = document.getElementById('lp-day-'+uidStr);
+      if(daySel) daySel.value = entries[entries.length-1].id;
+      const addBtn = document.getElementById('lp-add-'+uidStr);
+      if(addBtn) addBtn.addEventListener('click', ()=>{
+        const nameInput = document.getElementById('lp-name-'+uidStr);
+        const name = nameInput.value.trim();
+        if(!name){ nameInput.focus(); return; }
+        const entryId = document.getElementById('lp-day-'+uidStr).value;
+        const list = state.entries[trip.id];
+        const en = list.find(x=>x.id===entryId);
+        en.orte = (en.orte && en.orte.trim()) ? en.orte.trim()+'\n'+name : name;
+        saveEntries(trip.id);
+
+        const cache = loadGeoCache();
+        cache[name] = {lat, lon, label: suggested || name};
+        saveGeoCache(cache);
+
+        map.closePopup(popup);
+        const marker = L.marker([lat,lon]).addTo(map);
+        marker.bindPopup(`<b>${fmtDateShort(en.date)}</b><br>${escapeHtml(name)}`);
+        const statusEl = document.getElementById('map-status');
+        if(statusEl) statusEl.innerHTML = `Ort „${escapeHtml(name)}“ zu ${fmtDate(en.date)} hinzugefügt.`;
+      });
+    });
+  }
+
   async function showTripMap(trip){
     const places = extractPlaces(trip);
     const overlay = document.createElement('div');
@@ -901,6 +1005,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
       </div>
       <div id="trip-map"></div>
       <div class="loading-row" id="map-status" style="justify-content:center;padding:10px;"><div class="spinner"></div>Orte werden auf der Karte gesucht …</div>
+      <div class="hint" style="text-align:center;margin:0 16px 10px;">Tipp: Karte gedrückt halten (bzw. rechte Maustaste), um einen Ort direkt hier zu markieren.</div>
     `;
     document.body.appendChild(overlay);
     document.getElementById('close-map-btn').addEventListener('click', ()=>{
@@ -922,8 +1027,10 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
     topoLayer.addTo(map);
     L.control.layers({'Gelände (OpenTopoMap)': topoLayer, 'Standard (OpenStreetMap)': osmLayer}, null, {collapsed:false}).addTo(map);
 
+    attachLongPressAddPlace(map, trip);
+
     if(places.length===0){
-      document.getElementById('map-status').innerHTML = 'Keine Orte in "Besuchte Orte" eingetragen. Trag pro Zeile einen Ort ein, dann erscheint er hier.';
+      document.getElementById('map-status').innerHTML = 'Keine Orte in "Besuchte Orte" eingetragen. Trag pro Zeile einen Ort ein, oder halte die Karte gedrückt (bzw. rechte Maustaste), um einen Ort direkt hier zu markieren.';
       return;
     }
 
