@@ -173,6 +173,66 @@
   }
   function storeDelete(key){ try{ localStorage.removeItem(key); }catch(e){} }
 
+  // ---------- storage: photo bytes live in IndexedDB (much bigger quota than localStorage) ----------
+  // entries in localStorage only ever hold {id,w,h,rotate} per photo; the actual base64 "data"
+  // lives here, keyed by photo id, and gets merged back in by loadEntries().
+  const PHOTO_DB_NAME = 'rtb_photos', PHOTO_DB_STORE = 'photos';
+  let photoDbPromise = null;
+  function openPhotoDb(){
+    if(!window.indexedDB) return Promise.resolve(null);
+    if(!photoDbPromise){
+      photoDbPromise = new Promise((resolve)=>{
+        try{
+          const req = indexedDB.open(PHOTO_DB_NAME, 1);
+          req.onupgradeneeded = ()=>{ req.result.createObjectStore(PHOTO_DB_STORE, {keyPath:'id'}); };
+          req.onsuccess = ()=> resolve(req.result);
+          req.onerror = ()=>{ console.error('IndexedDB konnte nicht geöffnet werden', req.error); resolve(null); };
+        }catch(e){ console.error('IndexedDB nicht verfügbar', e); resolve(null); }
+      });
+    }
+    return photoDbPromise;
+  }
+  async function photoPut(id, data){
+    const db = await openPhotoDb();
+    if(!db) return;
+    return new Promise((resolve)=>{
+      const tx = db.transaction(PHOTO_DB_STORE,'readwrite');
+      tx.objectStore(PHOTO_DB_STORE).put({id, data});
+      tx.oncomplete = ()=> resolve();
+      tx.onerror = ()=>{ console.error('Foto speichern fehlgeschlagen', tx.error); resolve(); };
+    });
+  }
+  async function photoDelete(id){
+    const db = await openPhotoDb();
+    if(!db) return;
+    return new Promise((resolve)=>{
+      const tx = db.transaction(PHOTO_DB_STORE,'readwrite');
+      tx.objectStore(PHOTO_DB_STORE).delete(id);
+      tx.oncomplete = ()=> resolve();
+      tx.onerror = ()=> resolve();
+    });
+  }
+  async function photoGetMany(ids){
+    const out = {};
+    const db = await openPhotoDb();
+    if(!db || !ids.length) return out;
+    return new Promise((resolve)=>{
+      const tx = db.transaction(PHOTO_DB_STORE,'readonly');
+      const store = tx.objectStore(PHOTO_DB_STORE);
+      let remaining = ids.length;
+      ids.forEach(id=>{
+        const req = store.get(id);
+        req.onsuccess = ()=>{ if(req.result) out[id] = req.result.data; if(--remaining===0) resolve(out); };
+        req.onerror = ()=>{ if(--remaining===0) resolve(out); };
+      });
+    });
+  }
+  function stripPhotosForStorage(entries){
+    return entries.map(en=> Object.assign({}, en, {
+      photos: (en.photos||[]).map(p=> ({id:p.id, w:p.w, h:p.h, rotate:p.rotate}))
+    }));
+  }
+
   // ---------- state ----------
   let state = {
     view:'trips',
@@ -193,8 +253,30 @@
 
   function loadTrips(){ state.trips = storeGet('trips') || []; }
   function saveTrips(){ storeSet('trips', state.trips); }
-  function loadEntries(tripId){ state.entries[tripId] = (storeGet('entries:'+tripId) || []).sort((a,b)=>a.date.localeCompare(b.date)); }
-  function saveEntries(tripId){ storeSet('entries:'+tripId, state.entries[tripId]); }
+  async function loadEntries(tripId){
+    const entries = (storeGet('entries:'+tripId) || []).sort((a,b)=>a.date.localeCompare(b.date));
+    const idsToFetch = [];
+    entries.forEach(en=> (en.photos||[]).forEach(p=>{
+      if(!p.id) p.id = uid();               // legacy photo without id
+      if(p.data === undefined) idsToFetch.push(p.id);
+    }));
+    if(idsToFetch.length){
+      const fetched = await photoGetMany(idsToFetch);
+      entries.forEach(en=> (en.photos||[]).forEach(p=>{
+        if(p.data === undefined){ p.data = fetched[p.id] || null; p._fromDb = true; }
+      }));
+    }
+    state.entries[tripId] = entries;
+  }
+  async function saveEntries(tripId){
+    const entries = state.entries[tripId] || [];
+    const puts = [];
+    entries.forEach(en=> (en.photos||[]).forEach(p=>{
+      if(!p._fromDb && p.data){ puts.push(photoPut(p.id, p.data).then(()=>{ p._fromDb = true; })); }
+    }));
+    await Promise.all(puts);
+    storeSet('entries:'+tripId, stripPhotosForStorage(entries));
+  }
   function loadApiKey(){ state.apiKey = localStorage.getItem('rtb_api_key') || ''; }
   function saveApiKey(k){ localStorage.setItem('rtb_api_key', k); state.apiKey = k; }
 
@@ -377,11 +459,11 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
     });
 
     app.querySelectorAll('[data-trip]').forEach(el=>{
-      el.addEventListener('click', (e)=>{
+      el.addEventListener('click', async (e)=>{
         if(e.target.closest('[data-del-trip]') || e.target.closest('[data-color-toggle]') || e.target.closest('[data-pick-color]')) return;
         const id = el.getAttribute('data-trip');
         state.currentTripId = id;
-        if(!state.entries[id]) loadEntries(id);
+        if(!state.entries[id]) await loadEntries(id);
         state.view='trip'; render();
       });
     });
@@ -410,6 +492,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
         const id = el.getAttribute('data-del-trip');
         const trip = state.trips.find(t=>t.id===id);
         if(!confirm(`"${trip.name}" inklusive aller Tage wirklich löschen?`)) return;
+        (state.entries[id]||[]).forEach(en=> (en.photos||[]).forEach(p=> photoDelete(p.id)));
         state.trips = state.trips.filter(t=>t.id!==id);
         saveTrips();
         storeDelete('entries:'+id);
@@ -480,11 +563,14 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
     });
     app.querySelectorAll('[data-edit]').forEach(el=> el.addEventListener('click', ()=> openForm(el.getAttribute('data-edit'))));
     app.querySelectorAll('[data-del-entry]').forEach(el=>{
-      el.addEventListener('click', ()=>{
+      el.addEventListener('click', async ()=>{
         const id = el.getAttribute('data-del-entry');
         if(!confirm('Diesen Tag wirklich löschen?')) return;
+        const removed = state.entries[trip.id].find(e=>e.id===id);
         state.entries[trip.id] = state.entries[trip.id].filter(e=>e.id!==id);
-        saveEntries(trip.id); render();
+        await saveEntries(trip.id);
+        (removed && removed.photos || []).forEach(p=> photoDelete(p.id));
+        render();
       });
     });
     const exportBtn = document.getElementById('export-btn');
@@ -552,6 +638,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
       CATEGORIES.forEach(c=> state.formFields[c.key] = en[c.key] || '');
       state.formCustomLabel = en.customLabel || ''; state.formCustomText = en.customText || '';
       state.formPhotos = (en.photos||[]).slice();
+      state.formOriginalPhotoIds = state.formPhotos.map(p=>p.id);
       state.formGeneratedText = en.text || '';
     } else {
       const last = entries[entries.length-1];
@@ -563,6 +650,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
       CATEGORIES.forEach(c=> state.formFields[c.key] = '');
       state.formCustomLabel=''; state.formCustomText='';
       state.formPhotos = []; state.formGeneratedText='';
+      state.formOriginalPhotoIds = [];
     }
     state.view='form'; render();
   }
@@ -647,7 +735,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
       const statusLine = document.getElementById('status-line');
       statusLine.textContent = `${files.length} Foto(s) werden verarbeitet …`;
       for(const f of files){
-        try{ state.formPhotos.push(await readAndCompress(f)); }catch(err){ console.error(err); }
+        try{ state.formPhotos.push(Object.assign({id: uid()}, await readAndCompress(f))); }catch(err){ console.error(err); }
       }
       statusLine.textContent = '';
       render();
@@ -672,7 +760,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
       state.generating = false; render();
     });
 
-    document.getElementById('save-entry-btn').addEventListener('click', ()=>{
+    document.getElementById('save-entry-btn').addEventListener('click', async ()=>{
       const trip = state.trips.find(t=>t.id===state.currentTripId);
       if(!state.entries[trip.id]) state.entries[trip.id] = [];
       const entryObj = Object.assign({
@@ -687,7 +775,10 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
       const idx = list.findIndex(e=>e.id===entryObj.id);
       if(idx>=0) list[idx]=entryObj; else list.push(entryObj);
       state.entries[trip.id] = list.sort((a,b)=>a.date.localeCompare(b.date));
-      saveEntries(trip.id);
+      const keptIds = new Set(entryObj.photos.map(p=>p.id));
+      const removedIds = (state.formOriginalPhotoIds||[]).filter(id=>!keptIds.has(id));
+      await saveEntries(trip.id);
+      removedIds.forEach(id=> photoDelete(id));
       state.view='trip'; render();
     });
   }
@@ -771,7 +862,13 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
   }
 
   function exportAllData(){
-    const payload = { trips: state.trips, entries: state.entries, exportedAt: new Date().toISOString() };
+    const entriesClean = {};
+    Object.keys(state.entries).forEach(tid=>{
+      entriesClean[tid] = (state.entries[tid]||[]).map(en=> Object.assign({}, en, {
+        photos: (en.photos||[]).map(p=> ({id:p.id, data:p.data, w:p.w, h:p.h, rotate:p.rotate}))
+      }));
+    });
+    const payload = { trips: state.trips, entries: entriesClean, exportedAt: new Date().toISOString() };
     const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -784,7 +881,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
   function importDataFromFile(file){
     return new Promise((resolve, reject)=>{
       const reader = new FileReader();
-      reader.onload = (ev)=>{
+      reader.onload = async (ev)=>{
         try{
           const data = JSON.parse(ev.target.result);
           if(!data || !Array.isArray(data.trips)) throw new Error('Ungültiges Sicherungsformat');
@@ -793,14 +890,20 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
             if(!state.trips.find(x=>x.id===t.id)){ state.trips.push(t); tripsAdded++; }
           });
           saveTrips();
-          Object.keys(data.entries || {}).forEach(tripId=>{
+          for(const tripId of Object.keys(data.entries || {})){
             if(!state.entries[tripId]) state.entries[tripId] = [];
-            (data.entries[tripId]||[]).forEach(en=>{
-              if(!state.entries[tripId].find(x=>x.id===en.id)){ state.entries[tripId].push(en); entriesAdded++; }
-            });
+            for(const en of (data.entries[tripId]||[])){
+              if(state.entries[tripId].find(x=>x.id===en.id)) continue;
+              for(const p of (en.photos||[])){
+                if(!p.id) p.id = uid();
+                if(p.data){ await photoPut(p.id, p.data); p._fromDb = true; }
+              }
+              state.entries[tripId].push(en);
+              entriesAdded++;
+            }
             state.entries[tripId].sort((a,b)=>a.date.localeCompare(b.date));
-            saveEntries(tripId);
-          });
+            await saveEntries(tripId);
+          }
           resolve({trips: tripsAdded, entries: entriesAdded});
         }catch(e){ reject(e); }
       };
@@ -1138,14 +1241,20 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
   }
 
   // ---------- init ----------
-  function init(){
+  async function init(){
     if(typeof(Storage)==="undefined"){
       app.innerHTML = `<div class="empty"><div class="glyph">⚠️</div>Dein Browser unterstützt keinen lokalen Speicher (localStorage). Die App kann so keine Daten dauerhaft speichern.</div>`;
       return;
     }
     loadApiKey();
     loadTrips();
-    state.trips.forEach(t=> loadEntries(t.id));
+    for(const t of state.trips){
+      await loadEntries(t.id);
+      // one-time migration: photos still stored inline (from before IndexedDB support) get moved
+      // out of localStorage as soon as we see them, freeing up the tight localStorage quota.
+      const needsMigration = (state.entries[t.id]||[]).some(en=>(en.photos||[]).some(p=>p.data && !p._fromDb));
+      if(needsMigration) await saveEntries(t.id);
+    }
     render();
   }
   init();
