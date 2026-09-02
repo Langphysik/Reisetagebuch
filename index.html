@@ -143,7 +143,7 @@
   function weatherIcon(v){ const w = WEATHER.find(w=>w.v===v); return (w && w.v) ? w.icon : ''; }
   function weatherLabel(v){ const w = WEATHER.find(w=>w.v===v); return w ? w.label : ''; }
 
-  const STICKERS = ['☀️','⛅','🌧️','⛈️','❄️','🌈','⛰️','🏔️','🌊','🏜️','🌲','🏖️','🌅','🦭','🐬','🐋','🐄','🐐','🦌','🐦','🕊️','🐕','🚵','🚴','🥾','🏃','🏊','🏋️','⛵','🚄','⛪','🧖','♨️','🍕','🥗','🐟','😄','🥵','🥶','❤️','💑'];
+  const STICKERS = ['☀️','⛅','🌧️','⛈️','❄️','🌈','⛰️','🏔️','🌊','🏜️','🌲','🏖️','🌅','🦭','🐬','🐋','🐄','🐐','🦌','🐦','🕊️','🐕','🚵','🚴','🥾','🏃','🏊','🏋️','⛵','🚄','⛪','🧖','♨️','🍕','🥗','🐟','🍨','🍝','😄','🥵','🥶','❤️','💑'];
 
   const TRIP_COLORS = ['#F7F2E7','#F6DCC8','#F9E4A8','#DCE8C4','#C9E3DD','#CFE0F0','#DAD3EC','#F0D3DE'];
 
@@ -229,7 +229,7 @@
   }
   function stripPhotosForStorage(entries){
     return entries.map(en=> Object.assign({}, en, {
-      photos: (en.photos||[]).map(p=> ({id:p.id, w:p.w, h:p.h, rotate:p.rotate}))
+      photos: (en.photos||[]).map(p=> ({id:p.id, w:p.w, h:p.h, rotate:p.rotate, timeOfDay:p.timeOfDay}))
     }));
   }
 
@@ -281,12 +281,73 @@
   function saveApiKey(k){ localStorage.setItem('rtb_api_key', k); state.apiKey = k; }
 
   // ---------- image compression ----------
+  // reads the EXIF "DateTimeOriginal"/"DateTime" tag of a JPEG to bucket the photo
+  // into a time of day, so it can later be matched against the diary text (see chunkTimeOfDay)
+  function timeOfDayFromHour(h){
+    if(h==null || isNaN(h)) return null;
+    if(h>=5 && h<11) return 'morgen';
+    if(h>=11 && h<14) return 'mittag';
+    if(h>=14 && h<18) return 'nachmittag';
+    if(h>=18 && h<22) return 'abend';
+    return 'nacht';
+  }
+  function readExifIFD(view, tiffStart, ifdOffset, little){
+    const count = view.getUint16(ifdOffset, little);
+    const entries = {};
+    for(let i=0;i<count;i++){
+      const entryOffset = ifdOffset + 2 + i*12;
+      entries[view.getUint16(entryOffset, little)] = {
+        numValues: view.getUint32(entryOffset+4, little),
+        valueOffset: entryOffset+8
+      };
+    }
+    return entries;
+  }
+  function readExifAscii(view, tiffStart, entry, little){
+    const byteLength = entry.numValues;
+    const dataStart = byteLength<=4 ? entry.valueOffset : tiffStart + view.getUint32(entry.valueOffset, little);
+    let str='';
+    for(let i=0;i<byteLength-1;i++) str += String.fromCharCode(view.getUint8(dataStart+i));
+    return str;
+  }
+  function exifCaptureHour(buffer){
+    try{
+      const view = new DataView(buffer);
+      if(view.getUint16(0,false)!==0xFFD8) return null;
+      let offset = 2;
+      while(offset+4<=view.byteLength){
+        const marker = view.getUint16(offset,false);
+        if((marker & 0xFF00)!==0xFF00) break;
+        const segLen = view.getUint16(offset+2,false);
+        if(marker===0xFFE1){
+          const segStart = offset+4;
+          if(view.getUint32(segStart,false)!==0x45786966) return null; // not "Exif"
+          const tiffStart = segStart+6;
+          const little = view.getUint16(tiffStart,false)===0x4949;
+          const ifd0Offset = tiffStart + view.getUint32(tiffStart+4, little);
+          const ifd0 = readExifIFD(view, tiffStart, ifd0Offset, little);
+          let dateStr = null;
+          if(ifd0[0x8769]){
+            const exifIfdOffset = tiffStart + view.getUint32(ifd0[0x8769].valueOffset, little);
+            const exifIfd = readExifIFD(view, tiffStart, exifIfdOffset, little);
+            const dateEntry = exifIfd[0x9003] || exifIfd[0x9004];
+            if(dateEntry) dateStr = readExifAscii(view, tiffStart, dateEntry, little);
+          }
+          if(!dateStr && ifd0[0x0132]) dateStr = readExifAscii(view, tiffStart, ifd0[0x0132], little);
+          const m = dateStr && dateStr.match(/\d{4}:\d{2}:\d{2} (\d{2}):/);
+          return m ? parseInt(m[1],10) : null;
+        }
+        offset += 2 + segLen;
+      }
+    }catch(e){ /* kein/kaputtes EXIF, einfach ignorieren */ }
+    return null;
+  }
   function readAndCompress(file){
     return new Promise((resolve,reject)=>{
       const reader = new FileReader();
       reader.onload = function(ev){
         const img = new Image();
-        img.onload = function(){
+        img.onload = async function(){
           const maxDim = 1100;
           let w = img.width, h = img.height;
           if(w>h && w>maxDim){ h = Math.round(h*maxDim/w); w = maxDim; }
@@ -296,7 +357,9 @@
           const ctx = canvas.getContext('2d');
           ctx.drawImage(img,0,0,w,h);
           const data = canvas.toDataURL('image/jpeg',0.72);
-          resolve({data, w, h, rotate:(Math.random()*6-3).toFixed(1)});
+          let timeOfDay = null;
+          try{ timeOfDay = timeOfDayFromHour(exifCaptureHour(await file.arrayBuffer())); }catch(e){ /* ignore */ }
+          resolve({data, w, h, rotate:(Math.random()*6-3).toFixed(1), timeOfDay});
         };
         img.onerror = reject;
         img.src = ev.target.result;
@@ -583,6 +646,43 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
     if(mapBtn) mapBtn.addEventListener('click', ()=> showTripMap(trip));
   }
 
+  // German time-of-day keywords used to match text passages to photos taken at that time
+  const TIME_KEYWORDS = {
+    morgen: ['morgen','morgens','früh','frühstück','sonnenaufgang','vormittag'],
+    mittag: ['mittag','mittags','mittagessen'],
+    nachmittag: ['nachmittag','nachmittags'],
+    abend: ['abend','abends','abendessen','dinner','sonnenuntergang'],
+    nacht: ['nacht','nachts','mitternacht']
+  };
+  function chunkTimeOfDay(text){
+    const lower = text.toLowerCase();
+    for(const bucket in TIME_KEYWORDS){
+      if(TIME_KEYWORDS[bucket].some(w=>lower.includes(w))) return bucket;
+    }
+    return null;
+  }
+  // places photos next to the text chunk matching their EXIF time of day (e.g. an evening
+  // photo next to a passage mentioning "abends"); photos without a match or without a
+  // matching chunk fall back to the previous even round-robin distribution
+  function distributePhotosToChunks(photos, chunks){
+    const slots = chunks.map(()=>[]);
+    const chunkBuckets = chunks.map(chunkTimeOfDay);
+    const bucketPointers = {};
+    const fallback = [];
+    photos.forEach(p=>{
+      const matchIdx = p.timeOfDay ? chunkBuckets.reduce((acc,b,i)=>{ if(b===p.timeOfDay) acc.push(i); return acc; },[]) : [];
+      if(matchIdx.length){
+        const ptr = bucketPointers[p.timeOfDay] || 0;
+        slots[matchIdx[ptr % matchIdx.length]].push(p);
+        bucketPointers[p.timeOfDay] = ptr+1;
+      } else {
+        fallback.push(p);
+      }
+    });
+    fallback.forEach((p,i)=> slots[i % slots.length].push(p));
+    return slots;
+  }
+
   function renderEntryCard(en){
     const photos = en.photos || [];
     const escaped = escapeHtml(en.text||'');
@@ -598,8 +698,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
       const chunkSize = sentences.length <= 3 ? 1 : 2;
       const chunks = [];
       for(let i=0;i<sentences.length;i+=chunkSize) chunks.push(sentences.slice(i,i+chunkSize).join(' '));
-      const slots = chunks.map(()=>[]);
-      photos.forEach((p,i)=> slots[i % slots.length].push(p));
+      const slots = distributePhotosToChunks(photos, chunks);
       chunks.forEach((c,i)=>{
         bodyHtml += `<p style="margin:0 0 12px;">${c}</p>`;
         if(slots[i].length){
@@ -865,7 +964,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
     const entriesClean = {};
     Object.keys(state.entries).forEach(tid=>{
       entriesClean[tid] = (state.entries[tid]||[]).map(en=> Object.assign({}, en, {
-        photos: (en.photos||[]).map(p=> ({id:p.id, data:p.data, w:p.w, h:p.h, rotate:p.rotate}))
+        photos: (en.photos||[]).map(p=> ({id:p.id, data:p.data, w:p.w, h:p.h, rotate:p.rotate, timeOfDay:p.timeOfDay}))
       }));
     });
     const payload = { trips: state.trips, entries: entriesClean, exportedAt: new Date().toISOString() };
