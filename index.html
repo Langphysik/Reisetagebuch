@@ -229,7 +229,7 @@
   }
   function stripPhotosForStorage(entries){
     return entries.map(en=> Object.assign({}, en, {
-      photos: (en.photos||[]).map(p=> ({id:p.id, w:p.w, h:p.h, rotate:p.rotate, timeOfDay:p.timeOfDay}))
+      photos: (en.photos||[]).map(p=> ({id:p.id, w:p.w, h:p.h, rotate:p.rotate, timeOfDay:p.timeOfDay, captureHour:p.captureHour}))
     }));
   }
 
@@ -281,8 +281,8 @@
   function saveApiKey(k){ localStorage.setItem('rtb_api_key', k); state.apiKey = k; }
 
   // ---------- image compression ----------
-  // reads the EXIF "DateTimeOriginal"/"DateTime" tag of a JPEG to bucket the photo
-  // into a time of day, so it can later be matched against the diary text (see chunkTimeOfDay)
+  // reads the EXIF "DateTimeOriginal"/"DateTime" tag of a JPEG to get the capture hour,
+  // so the photo can later be matched against times mentioned in the diary text (see chunkHour)
   function timeOfDayFromHour(h){
     if(h==null || isNaN(h)) return null;
     if(h>=5 && h<11) return 'morgen';
@@ -334,8 +334,8 @@
             if(dateEntry) dateStr = readExifAscii(view, tiffStart, dateEntry, little);
           }
           if(!dateStr && ifd0[0x0132]) dateStr = readExifAscii(view, tiffStart, ifd0[0x0132], little);
-          const m = dateStr && dateStr.match(/\d{4}:\d{2}:\d{2} (\d{2}):/);
-          return m ? parseInt(m[1],10) : null;
+          const m = dateStr && dateStr.match(/\d{4}:\d{2}:\d{2} (\d{2}):(\d{2})/);
+          return m ? parseInt(m[1],10) + parseInt(m[2],10)/60 : null;
         }
         offset += 2 + segLen;
       }
@@ -357,9 +357,9 @@
           const ctx = canvas.getContext('2d');
           ctx.drawImage(img,0,0,w,h);
           const data = canvas.toDataURL('image/jpeg',0.72);
-          let timeOfDay = null;
-          try{ timeOfDay = timeOfDayFromHour(exifCaptureHour(await file.arrayBuffer())); }catch(e){ /* ignore */ }
-          resolve({data, w, h, rotate:(Math.random()*6-3).toFixed(1), timeOfDay});
+          let captureHour = null, timeOfDay = null;
+          try{ captureHour = exifCaptureHour(await file.arrayBuffer()); timeOfDay = timeOfDayFromHour(captureHour); }catch(e){ /* ignore */ }
+          resolve({data, w, h, rotate:(Math.random()*6-3).toFixed(1), timeOfDay, captureHour});
         };
         img.onerror = reject;
         img.src = ev.target.result;
@@ -646,7 +646,8 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
     if(mapBtn) mapBtn.addEventListener('click', ()=> showTripMap(trip));
   }
 
-  // German time-of-day keywords used to match text passages to photos taken at that time
+  // German time-of-day keywords and a representative clock hour for each, used to match
+  // text passages to photos taken around that time
   const TIME_KEYWORDS = {
     morgen: ['morgen','morgens','früh','frühstück','sonnenaufgang','vormittag'],
     mittag: ['mittag','mittags','mittagessen'],
@@ -654,32 +655,59 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
     abend: ['abend','abends','abendessen','dinner','sonnenuntergang'],
     nacht: ['nacht','nachts','mitternacht']
   };
-  function chunkTimeOfDay(text){
+  const BUCKET_HOUR = { morgen:8, mittag:12.5, nachmittag:15.5, abend:19.5, nacht:23 };
+
+  // approximate clock hour (0..24, e.g. 15.5 for "15:30") a text chunk refers to:
+  // first an explicit time like "15:00" / "15 Uhr" / "15.30 Uhr", otherwise a time-of-day keyword
+  function chunkHour(text){
     const lower = text.toLowerCase();
+    let m = lower.match(/\b(\d{1,2}):(\d{2})\b/) || lower.match(/\b(\d{1,2})\.(\d{2})\s*(?:uhr|h)\b/);
+    if(m){ const hh=+m[1], mm=+m[2]; if(hh<24 && mm<60) return hh + mm/60; }
+    m = lower.match(/\b(\d{1,2})\s*(?:uhr|h)\b/);
+    if(m){ const hh=+m[1]; if(hh<24) return hh; }
     for(const bucket in TIME_KEYWORDS){
-      if(TIME_KEYWORDS[bucket].some(w=>lower.includes(w))) return bucket;
+      if(TIME_KEYWORDS[bucket].some(w=>lower.includes(w))) return BUCKET_HOUR[bucket];
     }
     return null;
   }
-  // places photos next to the text chunk matching their EXIF time of day (e.g. an evening
-  // photo next to a passage mentioning "abends"); photos without a match or without a
-  // matching chunk fall back to the previous even round-robin distribution
+  // capture hour of a photo, also covering older photos that only stored a coarse timeOfDay
+  function photoHour(p){
+    if(typeof p.captureHour === 'number') return p.captureHour;
+    if(p.timeOfDay && BUCKET_HOUR[p.timeOfDay] != null) return BUCKET_HOUR[p.timeOfDay];
+    return null;
+  }
+  // places each photo next to the text chunk whose mentioned time is closest to the photo's
+  // capture time (within ~2 h). A photo whose time is known but far from every timed passage
+  // goes into a chunk that mentions no time, so it never contradicts the text; photos with no
+  // capture time at all fall back to an even round-robin.
   function distributePhotosToChunks(photos, chunks){
     const slots = chunks.map(()=>[]);
-    const chunkBuckets = chunks.map(chunkTimeOfDay);
-    const bucketPointers = {};
-    const fallback = [];
-    photos.forEach(p=>{
-      const matchIdx = p.timeOfDay ? chunkBuckets.reduce((acc,b,i)=>{ if(b===p.timeOfDay) acc.push(i); return acc; },[]) : [];
-      if(matchIdx.length){
-        const ptr = bucketPointers[p.timeOfDay] || 0;
-        slots[matchIdx[ptr % matchIdx.length]].push(p);
-        bucketPointers[p.timeOfDay] = ptr+1;
-      } else {
-        fallback.push(p);
-      }
+    const hours = chunks.map(chunkHour);
+    const timedChunks = hours.map((h,i)=> h!=null ? i : -1).filter(i=>i>=0);
+    const neutralChunks = hours.map((h,i)=> h==null ? i : -1).filter(i=>i>=0);
+    const TOL = 2;
+
+    const timed = [], untimed = [];
+    photos.forEach(p=> (photoHour(p)!=null ? timed : untimed).push(p));
+    timed.sort((a,b)=> photoHour(a) - photoHour(b));
+
+    let neutralPtr = 0;
+    timed.forEach(p=>{
+      const ph = photoHour(p);
+      let best = -1, bestDiff = Infinity;
+      timedChunks.forEach(i=>{
+        let d = Math.abs(hours[i] - ph);
+        if(d > 12) d = 24 - d;
+        if(d < bestDiff){ bestDiff = d; best = i; }
+      });
+      if(best >= 0 && bestDiff <= TOL) slots[best].push(p);
+      else if(neutralChunks.length) slots[neutralChunks[neutralPtr++ % neutralChunks.length]].push(p);
+      else if(best >= 0) slots[best].push(p);
+      else slots[0].push(p);
     });
-    fallback.forEach((p,i)=> slots[i % slots.length].push(p));
+
+    const targets = neutralChunks.length ? neutralChunks : chunks.map((_,i)=>i);
+    untimed.forEach((p,i)=> slots[targets[i % targets.length]].push(p));
     return slots;
   }
 
@@ -964,7 +992,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
     const entriesClean = {};
     Object.keys(state.entries).forEach(tid=>{
       entriesClean[tid] = (state.entries[tid]||[]).map(en=> Object.assign({}, en, {
-        photos: (en.photos||[]).map(p=> ({id:p.id, data:p.data, w:p.w, h:p.h, rotate:p.rotate, timeOfDay:p.timeOfDay}))
+        photos: (en.photos||[]).map(p=> ({id:p.id, data:p.data, w:p.w, h:p.h, rotate:p.rotate, timeOfDay:p.timeOfDay, captureHour:p.captureHour}))
       }));
     });
     const payload = { trips: state.trips, entries: entriesClean, exportedAt: new Date().toISOString() };
