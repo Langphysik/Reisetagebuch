@@ -119,6 +119,12 @@
   .leaflet-popup-content b{font-family:'IBM Plex Mono',monospace; font-size:11px;}
   ::selection{background:var(--stamp-soft);}
   a{color:var(--route);}
+  .day-nav{position:fixed;left:0;right:0;bottom:0;background:var(--card);box-shadow:0 -4px 14px rgba(43,38,32,0.18);z-index:50;transform:translateY(100%);transition:transform 0.25s ease;padding:8px 12px calc(8px + env(safe-area-inset-bottom));}
+  .day-nav.visible{transform:translateY(0);}
+  .day-nav-track{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;}
+  .day-nav-track::-webkit-scrollbar{display:none;}
+  .day-nav-item{flex:0 0 auto;font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ink-soft);background:var(--paper);border:1px solid var(--line);border-radius:20px;padding:6px 13px;cursor:pointer;white-space:nowrap;}
+  .day-nav-item.active{background:var(--route);color:var(--paper);border-color:var(--route);}
 </style>
 </head>
 <body>
@@ -427,7 +433,9 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
 
   // ---------- rendering ----------
   const app = document.getElementById('app');
+  let tripScrollCleanup = null;
   function render(){
+    if(state.view!=='trip' && tripScrollCleanup){ tripScrollCleanup(); tripScrollCleanup=null; }
     if(state.view==='trips') renderTrips();
     else if(state.view==='trip') renderTrip();
     else if(state.view==='form') renderForm();
@@ -575,6 +583,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
   }
 
   function renderTrip(){
+    if(tripScrollCleanup){ tripScrollCleanup(); tripScrollCleanup=null; }
     const trip = state.trips.find(t=>t.id===state.currentTripId);
     const entries = state.entries[trip.id] || [];
     let html = `<div class="topbar"><div><button class="back-btn" id="back-btn">‹ Alle Reisen</button><h1>${escapeHtml(trip.name)}</h1></div></div>`;
@@ -611,6 +620,12 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
     } else {
       entries.forEach(en=>{ html += renderEntryCard(en); });
     }
+
+    if(entries.length>1){
+      html += `<div class="day-nav" id="day-nav"><div class="day-nav-track">` +
+        entries.map(en=>`<button type="button" class="day-nav-item" data-daynav="${en.id}">${fmtDateShort(en.date)}</button>`).join('') +
+        `</div></div>`;
+    }
     app.innerHTML = html;
 
     document.getElementById('back-btn').addEventListener('click', ()=>{ state.view='trips'; render(); });
@@ -644,6 +659,51 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
     });
     const mapBtn = document.getElementById('map-btn');
     if(mapBtn) mapBtn.addEventListener('click', ()=> showTripMap(trip));
+
+    setupDayNav();
+  }
+
+  // fixed bottom navigation bar of day chips, shown once the user has scrolled past the
+  // top waypoint thread, so long trips stay easy to jump around in
+  function setupDayNav(){
+    const dayNav = document.getElementById('day-nav');
+    if(!dayNav) return;
+    const navItems = Array.from(dayNav.querySelectorAll('[data-daynav]'));
+    const threadWrap = document.querySelector('.thread-wrap');
+    const cards = Array.from(document.querySelectorAll('.entry-card'));
+
+    navItems.forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const card = document.getElementById('entry-'+el.getAttribute('data-daynav'));
+        if(card) card.scrollIntoView({behavior:'smooth', block:'start'});
+      });
+    });
+
+    let ticking = false;
+    function updateNav(){
+      ticking = false;
+      const threshold = threadWrap ? threadWrap.getBoundingClientRect().bottom : 0;
+      dayNav.classList.toggle('visible', threshold < 0);
+
+      let currentId = cards.length ? cards[0].id.slice(6) : null;
+      for(const card of cards){
+        if(card.getBoundingClientRect().top <= 120) currentId = card.id.slice(6);
+        else break;
+      }
+      let activeEl = null;
+      navItems.forEach(el=>{
+        const isActive = el.getAttribute('data-daynav')===currentId;
+        el.classList.toggle('active', isActive);
+        if(isActive) activeEl = el;
+      });
+      if(activeEl) activeEl.scrollIntoView({block:'nearest', inline:'center'});
+    }
+    function onScroll(){ if(!ticking){ ticking=true; requestAnimationFrame(updateNav); } }
+
+    window.addEventListener('scroll', onScroll, {passive:true});
+    window.addEventListener('resize', onScroll);
+    tripScrollCleanup = ()=>{ window.removeEventListener('scroll', onScroll); window.removeEventListener('resize', onScroll); };
+    updateNav();
   }
 
   // German time-of-day keywords and a representative clock hour for each, used to match
