@@ -76,7 +76,9 @@
   .waypoint:not(:last-child)::after{content:''; position:absolute; top:14px; left:calc(50% + 8px); width:46px; height:0;border-top:2px dashed var(--route-soft); z-index:0;}
   .waypoint-dot{position:relative; z-index:1; width:15px;height:15px;border-radius:50%;border:2px solid var(--route); background:var(--paper);display:flex;align-items:center;justify-content:center;font-size:9px;}
   .waypoint.active .waypoint-dot{background:var(--route);}
-  .waypoint-label{font-family:'IBM Plex Mono',monospace; font-size:10.5px; color:var(--ink-soft); margin-top:6px; white-space:nowrap;}
+  .waypoint-label{font-family:'IBM Plex Mono',monospace; font-size:10.5px; color:var(--ink-soft); margin-top:6px; white-space:nowrap; display:flex; flex-direction:column; align-items:center; gap:1px;}
+  .waypoint-label .wd{font-size:9px; opacity:0.65; letter-spacing:0.06em;}
+  .day-nav-item .wd{opacity:0.6; font-size:10px;}
   .waypoint-weather{font-size:13px; margin-top:2px;}
   .add-waypoint .waypoint-dot{border-style:dashed; color:var(--route);}
   .sticker-picker{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px;}
@@ -85,7 +87,7 @@
   .entry-stickers{font-size:16px; letter-spacing:2px;}
   .photo-picker-row{display:flex; gap:10px; flex-wrap:wrap; margin-bottom:6px;}
   .photo-thumb{position:relative; width:78px; height:78px; border-radius:4px; overflow:hidden;box-shadow:0 2px 6px rgba(43,38,32,0.25); flex:0 0 auto;}
-  .photo-thumb img{width:100%;height:100%;object-fit:cover;display:block;}
+  .photo-thumb img{width:100%;height:100%;object-fit:contain;background:#fff;display:block;}
   .photo-thumb .rm{position:absolute; top:2px; right:2px; background:rgba(43,38,32,0.65); color:#fff;border:none; border-radius:50%; width:19px;height:19px; font-size:11px; cursor:pointer; line-height:1;}
   .photo-thumb .mv{position:absolute; bottom:2px; background:rgba(247,242,231,0.9); color:var(--ink);border:none; width:19px;height:19px; font-size:11px; cursor:pointer; border-radius:3px;}
   .photo-thumb .mv.l{left:2px;} .photo-thumb .mv.r{right:2px;}
@@ -97,13 +99,13 @@
   .entry-actions{display:flex;gap:6px;}
   .entry-text{font-family:'Source Serif 4', serif; font-size:16.5px; line-height:1.65; color:var(--ink);}
   .photo-mosaic{display:grid; grid-template-columns:repeat(6,1fr); gap:10px; margin-top:16px;}
-  .photo-mosaic img{width:100%; height:100%; object-fit:cover; border-radius:2px; display:block;background:#fff; padding:5px 5px 16px; box-shadow:0 3px 8px rgba(43,38,32,0.22);}
+  .photo-mosaic img{width:100%; height:100%; object-fit:contain; border-radius:2px; display:block;background:#fff; padding:5px 5px 16px; box-shadow:0 3px 8px rgba(43,38,32,0.22);}
   .photo-mosaic .ph{grid-column:span 3;}
   .photo-mosaic .ph.big{grid-column:span 4;}
   .photo-mosaic .ph.small{grid-column:span 2;}
   @media (max-width:520px){.photo-mosaic{grid-template-columns:repeat(2,1fr);}.photo-mosaic .ph, .photo-mosaic .ph.big, .photo-mosaic .ph.small{grid-column:span 1;}}
   .inline-photos{display:flex; gap:10px; flex-wrap:wrap; margin:6px 0 16px;}
-  .inline-photos img{flex:1 1 140px; max-width:100%; height:150px; object-fit:cover; border-radius:2px; display:block; background:#fff; padding:5px 5px 14px; box-shadow:0 3px 8px rgba(43,38,32,0.22);}
+  .inline-photos img{flex:1 1 140px; max-width:100%; height:150px; object-fit:contain; border-radius:2px; display:block; background:#fff; padding:5px 5px 14px; box-shadow:0 3px 8px rgba(43,38,32,0.22);}
   .loading-row{display:flex;align-items:center;gap:10px;color:var(--ink-soft);font-family:'IBM Plex Mono',monospace;font-size:12.5px;padding:10px 0;}
   .spinner{width:14px;height:14px;border-radius:50%;border:2px solid var(--route-soft);border-top-color:var(--route);animation:spin 0.8s linear infinite;}
   @keyframes spin{to{transform:rotate(360deg);}}
@@ -154,6 +156,7 @@
   const TRIP_COLORS = ['#F7F2E7','#F6DCC8','#F9E4A8','#DCE8C4','#C9E3DD','#CFE0F0','#DAD3EC','#F0D3DE'];
 
   const CATEGORIES = [
+    {key:'companions', label:'Mit wem warst du unterwegs', placeholder:'z. B. mit Partner:in, Familie, Freunden, allein …'},
     {key:'essen', label:'Essen', placeholder:'Was hast du gegessen? Highlights, Restaurants, Spezialitäten …'},
     {key:'tiere', label:'Erlebnisse mit Tieren', placeholder:'Tieren begegnet? Was ist passiert?'},
     {key:'menschen', label:'Begegnungen mit Menschen', placeholder:'Interessante Begegnungen, Gespräche …'},
@@ -165,6 +168,8 @@
   function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
   function fmtDate(iso){ if(!iso) return ''; const d=new Date(iso+'T00:00:00'); return d.toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit',year:'numeric'}); }
   function fmtDateShort(iso){ if(!iso) return ''; const d=new Date(iso+'T00:00:00'); return d.toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit'}); }
+  const WEEKDAYS_SHORT = ['So','Mo','Di','Mi','Do','Fr','Sa'];
+  function weekdayShort(iso){ if(!iso) return ''; const d=new Date(iso+'T00:00:00'); return WEEKDAYS_SHORT[d.getDay()]; }
   function todayISO(){ return new Date().toISOString().slice(0,10); }
   function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
@@ -378,6 +383,7 @@
   // ---------- text generation ----------
   function localTemplateText(f){
     const pieces = [];
+    if(f.companions) pieces.push(`Unterwegs war ich mit: ${f.companions.trim()}.`);
     if(f.weather) pieces.push(`Das Wetter: ${weatherLabel(f.weather)}.`);
     if(f.aktivitaet) pieces.push(f.aktivitaet.trim());
     if(f.orte) pieces.push(`Unterwegs habe ich diese Orte gesehen: ${f.orte.trim()}`);
@@ -497,6 +503,8 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
     html += `<div class="panel">
       <label>Neue Reise</label>
       <input type="text" id="new-trip-name" placeholder="z. B. Alpencross 2026, Allgäu, Nordsee …">
+      <label>Mit wem bist du unterwegs? (optional)</label>
+      <input type="text" id="new-trip-companions" placeholder="z. B. mit Partner:in, Familie, Freunden, allein …">
       <button class="btn" id="new-trip-btn">Reise anlegen</button>
     </div>`;
     app.innerHTML = html;
@@ -575,7 +583,8 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
       const input = document.getElementById('new-trip-name');
       const name = input.value.trim();
       if(!name){ input.focus(); return; }
-      const trip = {id:uid(), name, createdAt:new Date().toISOString()};
+      const companions = document.getElementById('new-trip-companions').value.trim();
+      const trip = {id:uid(), name, createdAt:new Date().toISOString(), companions};
       state.trips.push(trip); saveTrips();
       state.entries[trip.id] = [];
       state.currentTripId = trip.id; state.view='trip'; render();
@@ -590,7 +599,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
 
     html += `<div class="thread-wrap"><div class="thread-track">`;
     entries.forEach(en=>{
-      html += `<div class="waypoint" data-goto="${en.id}"><div class="waypoint-dot"></div><div class="waypoint-weather">${weatherIcon(en.weather)}</div><div class="waypoint-label">${fmtDateShort(en.date)}</div></div>`;
+      html += `<div class="waypoint" data-goto="${en.id}"><div class="waypoint-dot"></div><div class="waypoint-weather">${weatherIcon(en.weather)}</div><div class="waypoint-label"><span class="wd">${weekdayShort(en.date)}</span><span>${fmtDateShort(en.date)}</span></div></div>`;
     });
     html += `<div class="waypoint add-waypoint" id="add-waypoint"><div class="waypoint-dot">+</div><div class="waypoint-label">Neu</div></div></div></div>`;
 
@@ -623,7 +632,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
 
     if(entries.length>1){
       html += `<div class="day-nav" id="day-nav"><div class="day-nav-track">` +
-        entries.map(en=>`<button type="button" class="day-nav-item" data-daynav="${en.id}">${fmtDateShort(en.date)}</button>`).join('') +
+        entries.map(en=>`<button type="button" class="day-nav-item" data-daynav="${en.id}"><span class="wd">${weekdayShort(en.date)}</span> ${fmtDateShort(en.date)}</button>`).join('') +
         `</div></div>`;
     }
     app.innerHTML = html;
@@ -834,7 +843,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
       state.formDate = nextDate;
       state.formWeather = '';
       state.formStickers = [];
-      CATEGORIES.forEach(c=> state.formFields[c.key] = '');
+      CATEGORIES.forEach(c=> state.formFields[c.key] = (c.key==='companions' ? (trip.companions||'') : ''));
       state.formCustomLabel=''; state.formCustomText='';
       state.formPhotos = []; state.formGeneratedText='';
       state.formOriginalPhotoIds = [];
@@ -971,6 +980,19 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
   }
 
   // ---------- PDF export ----------
+  function hexToRgb(hex){
+    const m = (hex||'').replace('#','');
+    return [parseInt(m.substring(0,2),16)||255, parseInt(m.substring(2,4),16)||255, parseInt(m.substring(4,6),16)||255];
+  }
+  // fills the current PDF page with the trip's chosen pastel color (same palette as the trip card),
+  // so exports feel less like plain office paper and more like the app's own paper-and-ink look
+  function fillPageBackground(doc, hex){
+    const [r,g,b] = hexToRgb(hex);
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+    doc.setFillColor(r,g,b);
+    doc.rect(0,0,pageW,pageH,'F');
+  }
   async function exportTripPdf(trip){
     const statusEl = document.getElementById('export-status');
     const fmt = document.getElementById('export-format').value;
@@ -992,7 +1014,9 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
       const pageW = doc.internal.pageSize.getWidth();
       const pageH = doc.internal.pageSize.getHeight();
       const margin = 16;
+      const bgColor = trip.color || TRIP_COLORS[0];
 
+      fillPageBackground(doc, bgColor);
       doc.setFont('times','bold'); doc.setFontSize(26);
       doc.text(trip.name, pageW/2, pageH/2 - 6, {align:'center'});
       doc.setFont('times','normal'); doc.setFontSize(11);
@@ -1001,6 +1025,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
       const entries = state.entries[trip.id] || [];
       for(const en of entries){
         doc.addPage();
+        fillPageBackground(doc, bgColor);
         let y = margin;
         doc.setFont('times','bold'); doc.setFontSize(14);
         doc.text(fmtDate(en.date), margin, y);
@@ -1019,7 +1044,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
           const cellW = (pageW - margin*2 - gap*(cols-1)) / cols;
           for(let i=0;i<en.photos.length;i++){
             const p = en.photos[i];
-            if(y + slotH > pageH - margin){ doc.addPage(); y = margin; }
+            if(y + slotH > pageH - margin){ doc.addPage(); fillPageBackground(doc, bgColor); y = margin; }
             const col = i%cols;
             const cellX = margin + col*(cellW+gap);
             const ratio = (p.w && p.h) ? p.w/p.h : 1;
@@ -1038,6 +1063,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
         statusEl.innerHTML = `<div class="spinner"></div>Orte für Karte werden gesucht … (${done}/${total})`;
       });
       doc.addPage();
+      fillPageBackground(doc, bgColor);
       drawRouteMapOnPage(doc, trip.name, geocoded);
 
       doc.save(`${trip.name.replace(/[^a-z0-9äöüß_\- ]/gi,'')||'reisetagebuch'}.pdf`);
@@ -1418,6 +1444,7 @@ Schreibe nur den fertigen Tagebuchtext, ohne Anführungszeichen, ohne Vorrede, o
       });
       const { jsPDF } = window.jspdf;
       const doc = new jsPDF({unit:'mm', format:'a4'});
+      fillPageBackground(doc, trip.color || TRIP_COLORS[0]);
       drawRouteMapOnPage(doc, trip.name, geocoded);
       doc.save(`${trip.name.replace(/[^a-z0-9äöüß_\- ]/gi,'')||'reisetagebuch'}-karte.pdf`);
     }catch(e){
